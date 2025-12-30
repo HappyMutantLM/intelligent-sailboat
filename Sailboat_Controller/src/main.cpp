@@ -5,20 +5,20 @@
 #include <Adafruit_ILI9341.h>
 #include <RadioLib.h>
 #include "ControllerConfig.h"
+#include "Protocol.h"  // <-- Use unified protocol
 
 // --- OBJECTS ---
 RFM95 radio = new Module(LORA_CS, LORA_IRQ, LORA_RST);
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
-// --- SHARED DATA STRUCTURES (Must match Boat!) ---
-struct ControlPacket {
-    int16_t rudder; // -45 to +45
-    int16_t sail;   // 0 to 90
-};
+// --- PROTOCOL PACKETS ---
+ControlPacket txControl;
+TelemetryPacket lastTelemetry;
+ModePacket txMode;
 
-ControlPacket txPacket;
-float boatHdg = 0;
-float boatBatt = 0;
+// --- STATE VARIABLES ---
+SailingMode currentMode = MODE_MANUAL;
+bool linkActive = false;
 
 // --- CALIBRATION VARIABLES ---
 int xMin = 0, xMax = 1023, xCenter = 512;
@@ -27,6 +27,7 @@ int yMin = 0, yMax = 1023, yCenter = 512;
 // --- TIMERS ---
 unsigned long lastTx = 0;
 unsigned long lastRx = 0;
+unsigned long lastUIUpdate = 0;
 
 // --- HELPER: CALIBRATION ROUTINE ---
 void calibrateJoystick() {
@@ -78,6 +79,7 @@ void calibrateJoystick() {
         // Visual Progress Bar
         int bar = map(millis() - startTime, 0, 4000, 0, 300);
         tft.fillRect(10, 200, bar, 10, ILI9341_BLUE);
+        delay(10);
     }
     
     tft.fillScreen(ILI9341_BLACK);
@@ -91,7 +93,7 @@ void setup() {
     
     // 1. INIT SCREEN
     tft.begin();
-    tft.setRotation(1); // Pins at Top (Corrected Orientation)
+    tft.setRotation(1); // Landscape mode
     tft.fillScreen(ILI9341_BLACK);
     
     // 2. RUN CALIBRATION
@@ -100,48 +102,97 @@ void setup() {
     // 3. DRAW UI HEADER
     tft.setTextColor(ILI9341_WHITE);
     tft.setTextSize(2);
-    tft.setCursor(10, 10); tft.print("SAILBOT REMOTE");
+    tft.setCursor(10, 10); 
+    tft.print("SAILBOT v");
+    tft.println(PROTOCOL_VERSION);
     
     // 4. INIT RADIO
-    tft.setCursor(10, 40); tft.print("Radio... ");
+    tft.setCursor(10, 40); 
+    tft.print("Radio... ");
     int state = radio.begin(LORA_FREQ);
     if (state == RADIOLIB_ERR_NONE) {
-        tft.setTextColor(ILI9341_GREEN); tft.println("OK");
+        tft.setTextColor(ILI9341_GREEN); 
+        tft.println("OK");
         radio.setOutputPower(20);
+        
+        // Match boat settings for best compatibility
+        radio.setSpreadingFactor(10);
+        radio.setBandwidth(125.0);
+        radio.setCodingRate(8);
+        
+        Serial.println("Radio initialized");
     } else {
-        tft.setTextColor(ILI9341_RED); tft.print("FAIL: "); tft.println(state);
+        tft.setTextColor(ILI9341_RED); 
+        tft.print("FAIL: "); 
+        tft.println(state);
         while(1);
     }
     
     // 5. DRAW UI DASHBOARD
     tft.drawFastHLine(0, 70, 320, ILI9341_WHITE);
     tft.drawFastHLine(0, 160, 320, ILI9341_WHITE);
+    
+    // 6. Mode Label
+    tft.setTextSize(2);
+    tft.setCursor(200, 10);
+    tft.setTextColor(ILI9341_CYAN);
+    tft.print("MANUAL");
 }
 
 void updateUI() {
+    // Only update UI every 200ms to reduce flicker
+    if (millis() - lastUIUpdate < 200) return;
+    lastUIUpdate = millis();
+    
     // --- TOP: COMMANDS ---
     tft.setTextColor(ILI9341_CYAN, ILI9341_BLACK);
     tft.setTextSize(3);
     
     tft.setCursor(10, 90);
-    tft.print("RUD: "); tft.print(txPacket.rudder); tft.print("   ");
+    tft.print("RUD:");
+    tft.setCursor(120, 90);
+    if (txControl.rudder >= 0) tft.print(" ");
+    tft.print(txControl.rudder);
+    tft.print("  ");
     
     tft.setCursor(10, 125);
-    tft.print("SAIL: "); tft.print(txPacket.sail); tft.print("   ");
+    tft.print("SAIL:");
+    tft.setCursor(130, 125);
+    tft.print(txControl.sail);
+    tft.print("  ");
 
     // --- BOTTOM: TELEMETRY ---
-    if (millis() - lastRx < 2000) {
+    linkActive = (millis() - lastRx < 3000);
+    
+    if (linkActive) {
         tft.setTextColor(ILI9341_GREEN, ILI9341_BLACK);
         tft.setTextSize(2);
-        tft.setCursor(10, 180); 
-        tft.print("HDG: "); tft.print(boatHdg, 1); tft.print("   ");
         
-        tft.setCursor(180, 180);
-        tft.print("BAT: "); tft.print(boatBatt, 1); tft.println("V");
+        tft.setCursor(10, 180); 
+        tft.print("HDG:");
+        tft.setCursor(70, 180);
+        tft.print(lastTelemetry.heading, 0);
+        tft.print("  ");
+        
+        tft.setCursor(160, 180);
+        tft.print("BAT:");
+        tft.setCursor(220, 180);
+        tft.print(lastTelemetry.battery, 1);
+        tft.print("V ");
+        
+        tft.setCursor(10, 210);
+        tft.print("WIND:");
+        tft.setCursor(90, 210);
+        tft.print(lastTelemetry.windAngle, 0);
+        tft.print("  ");
+        
     } else {
         tft.setTextColor(ILI9341_RED, ILI9341_BLACK);
         tft.setTextSize(2);
-        tft.setCursor(10, 180); tft.print("NO LINK DETECTED   ");
+        tft.setCursor(10, 180); 
+        tft.print("NO LINK            ");
+        tft.setCursor(10, 210);
+        tft.print("                   ");
     }
 }
 
@@ -150,59 +201,64 @@ void loop() {
     int rawX = analogRead(JOY_X_PIN);
     int rawY = analogRead(JOY_Y_PIN);
     
-    // --- RUDDER LOGIC (Split Mapping) ---
-    // Maps Joystick X to -45 (Left) ... 0 ... +45 (Right)
-    if (rawX < xCenter - CALIB_DEADZONE) {
-        // Left Side
-        txPacket.rudder = map(rawX, xMin, xCenter - CALIB_DEADZONE, -45, 0);
-    } else if (rawX > xCenter + CALIB_DEADZONE) {
-        // Right Side
-        txPacket.rudder = map(rawX, xCenter + CALIB_DEADZONE, xMax, 0, 45);
-    } else {
-        // Deadzone
-        txPacket.rudder = 0;
-    }
-    txPacket.rudder = constrain(txPacket.rudder, -45, 45);
+    // Use protocol helper functions for mapping
+    txControl.rudder = mapJoystickToRudder(rawX, xCenter, xMin, xMax, CALIB_DEADZONE);
+    txControl.sail = mapJoystickToSail(rawY, yCenter, yMin, yMax, CALIB_DEADZONE);
     
-    // --- SAIL LOGIC ---
-    // Maps Joystick Y to 0 (Tight) ... 90 (Loose)
-    if (rawY < yCenter - CALIB_DEADZONE) {
-        // Up/Tight
-        txPacket.sail = map(rawY, yMin, yCenter - CALIB_DEADZONE, 0, 45);
-    } else if (rawY > yCenter + CALIB_DEADZONE) {
-        // Down/Loose
-        txPacket.sail = map(rawY, yCenter + CALIB_DEADZONE, yMax, 45, 90);
-    } else {
-        txPacket.sail = 45; // Center point
-    }
-    txPacket.sail = constrain(txPacket.sail, 0, 90);
+    // Constrain values (redundant safety check)
+    txControl.rudder = constrain(txControl.rudder, -100, 100);
+    txControl.sail = constrain(txControl.sail, 0, 100);
 
-    // 2. SEND COMMANDS (10Hz)
+    // 2. SEND CONTROL COMMANDS (10Hz)
     if (millis() - lastTx > 100) {
         lastTx = millis();
-        radio.transmit((uint8_t*)&txPacket, sizeof(txPacket));
+        
+        // Update checksum before sending
+        txControl.updateChecksum();
+        
+        int state = radio.transmit((uint8_t*)&txControl, sizeof(txControl));
+        
+        if (state == RADIOLIB_ERR_NONE) {
+            Serial.println("Control packet sent");
+        } else {
+            Serial.print("TX failed: ");
+            Serial.println(state);
+        }
+        
         updateUI();
     }
 
-    // 3. RECEIVE TELEMETRY
-    // Format: "HDG,LAT,LON,BATT"
-    String str;
-    int state = radio.receive(str);
+    // 3. RECEIVE TELEMETRY (Non-blocking)
+    // Start receive if not already receiving
+    radio.startReceive();
+    
+    uint8_t rxBuffer[256];
+    int state = radio.readData(rxBuffer, sizeof(rxBuffer));
+    
     if (state == RADIOLIB_ERR_NONE) {
-        lastRx = millis();
+        // Check packet type
+        PacketType pktType = getPacketType(rxBuffer);
         
-        // Parse CSV string
-        int firstComma = str.indexOf(',');
-        int secondComma = str.indexOf(',', firstComma + 1);
-        int thirdComma = str.indexOf(',', secondComma + 1);
-        
-        if (firstComma > 0) {
-            String hStr = str.substring(0, firstComma);
-            // Latitude and Longitude are in the middle (skipped for display)
-            String bStr = str.substring(thirdComma + 1);
+        if (pktType == PKT_TELEMETRY) {
+            TelemetryPacket* telem = (TelemetryPacket*)rxBuffer;
             
-            boatHdg = hStr.toFloat();
-            boatBatt = bStr.toFloat();
+            if (telem->isValid()) {
+                // Copy data
+                lastTelemetry = *telem;
+                lastRx = millis();
+                
+                Serial.print("Telemetry: HDG=");
+                Serial.print(lastTelemetry.heading);
+                Serial.print(" WIND=");
+                Serial.print(lastTelemetry.windAngle);
+                Serial.print(" BAT=");
+                Serial.println(lastTelemetry.battery);
+            } else {
+                Serial.println("Telemetry checksum failed!");
+            }
         }
     }
+    
+    // Small delay to prevent overwhelming the radio
+    delay(10);
 }
