@@ -1,0 +1,31 @@
+#include "Actuators.h"
+
+// --- UPDATED PIN DEFINITIONS ---
+#define RUDDER_PIN 10  // User confirmed Pin 10
+#define SAIL_PIN   11  // User confirmed Pin 11
+
+void ActuatorManager::begin() {
+    _rudderServo.attach(RUDDER_PIN);
+    _sailServo.attach(SAIL_PIN);
+    
+    // Startup positions (Center/Safe)
+    _rudderServo.write(90); 
+    _sailServo.write(45);   
+}
+
+void ActuatorManager::setRudder(int angle) {
+    // Input: -45 (Left) to +45 (Right)
+    // Servo: 45 (Left) to 135 (Right)
+    // We map this to keep the servo safe and not hitting the wall
+    int servoValue = map(angle, -45, 45, 45, 135); 
+    servoValue = constrain(servoValue, 0, 180);
+    _rudderServo.write(servoValue);
+}
+
+void ActuatorManager::setSail(int angle) {
+    // Input: 0 (Tight) to 90 (Loose)
+    // Servo: 0 (Tight) to 120 (Loose)
+    int servoValue = map(angle, 0, 90, 0, 120);
+    servoValue = constrain(servoValue, 0, 180);
+    _sailServo.write(servoValue);
+}
