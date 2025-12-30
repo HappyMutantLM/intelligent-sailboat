@@ -10,17 +10,17 @@ There will be one system for the boat, a low-profile handheld controller and the
 but also receive full telemetry.
 
 Boat Hardware:
-Adafruit RFM95W LoRa Radio Transceiver Breakout - 868 or 915 MHz - RadioFruit PID: 3072
-Adafruit 9-DOF Orientation IMU Fusion Breakout - BNO085 (BNO080) - STEMMA QT / Qwiic PID: 4754 PowerBoost 1000 Charger - Rechargeable 5V Lipo USB Boost @ 1A - 1000C PID: 2465
-Lithium Ion Battery Pack - 3.7V 6600mAh PID: 353
-Adafruit Metro M4 feat. Microchip ATSAMD51 PID: 3382
-Adafruit Ultimate GPS Breakout - 66 channel w/10 Hz updates - PA1616S PID: 746
-Adafruit AS5600 Magnetic Angle Sensor - STEMMA QT PID: 6357 one for each of the servos and one for wind direction
-Standard Size - High Torque - Metal Gear Servo PID: 1142 - one for sails one for rudder
-TCA9548A I2C Multiplexer PID: 2717
-Breadboard-friendly RGB Smart NeoPixel - Pack of 5 Product ID: 1312
-UBEC DC/DC Step-Down (Buck) Converter - 5V @ 3A output PID: 1385
-MILAPEAK 10pcs (5 Sets) 12 Positions Dual Row 600V 15A Screw Terminal Strip Blocks with Cover + 400V 15A 12 Positions Pre-Insulated Terminals Barrier Strip (Black & Red) (https://www.amazon.com/dp/B07CLW5FPS?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1)
+*Adafruit RFM95W LoRa Radio Transceiver Breakout - 868 or 915 MHz - RadioFruit PID: 3072
+*Adafruit 9-DOF Orientation IMU Fusion Breakout - BNO085 (BNO080) - STEMMA QT / Qwiic PID: 4754 PowerBoost 1000 Charger - Rechargeable 5V Lipo USB Boost @ 1A - 1000C PID: 2465
+*Lithium Ion Battery Pack - 3.7V 6600mAh PID: 353
+*Adafruit Metro M4 feat. Microchip ATSAMD51 PID: 3382
+*Adafruit Ultimate GPS Breakout - 66 channel w/10 Hz updates - PA1616S PID: 746
+*Adafruit AS5600 Magnetic Angle Sensor - STEMMA QT PID: 6357 one for each of the servos and one for wind direction
+*Standard Size - High Torque - Metal Gear Servo PID: 1142 - one for sails one for rudder
+*TCA9548A I2C Multiplexer PID: 2717
+*Breadboard-friendly RGB Smart NeoPixel - Pack of 5 Product ID: 1312
+*UBEC DC/DC Step-Down (Buck) Converter - 5V @ 3A output PID: 1385
+*MILAPEAK 10pcs (5 Sets) 12 Positions Dual Row 600V 15A Screw Terminal Strip Blocks with Cover + 400V 15A 12 Positions Pre-Insulated Terminals Barrier Strip (Black & Red) (https://www.amazon.com/dp/B07CLW5FPS?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1)
 
 Controller Hardware
 Analog 2-axis Thumb Joystick with Select Button + Breakout Board PID: 512
