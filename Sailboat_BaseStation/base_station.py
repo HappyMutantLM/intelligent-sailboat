@@ -1,7 +1,11 @@
+#!/usr/bin/env python3
 """
 Intelligent Sailboat - Base Station GUI
 Raspberry Pi 4 with 7" Touchscreen
 Communicates with boat via Feather M0 LoRa USB dongle
+
+Author: Leila
+Date: 2024-12-30
 """
 
 import tkinter as tk
@@ -11,20 +15,133 @@ import serial
 import struct
 import threading
 import time
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 import queue
 
-# === CONFIGURATION ===
-SERIAL_PORT = '/dev/ttyACM0'  # Feather M0 USB
-BAUD_RATE = 115200
+# === CONFIGURATION MANAGER ===
 
-# === PROTOCOL DEFINITIONS (Match Protocol.h) ===
+class Config:
+    """Configuration manager for base station"""
+    
+    DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.json"
+    
+    def __init__(self, config_path=None):
+        self.config_path = config_path or self.DEFAULT_CONFIG_PATH
+        self.data = self.load_config()
+    
+    def load_config(self):
+        """Load configuration from JSON file"""
+        try:
+            with open(self.config_path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"⚠️  Config file not found: {self.config_path}")
+            print("Creating default config...")
+            defaults = self.get_defaults()
+            self.data = defaults
+            self.save_config()
+            return defaults
+        except json.JSONDecodeError as e:
+            print(f"⚠️  Config file parse error: {e}")
+            print("Using default values...")
+            return self.get_defaults()
+    
+    def save_config(self):
+        """Save current configuration to file"""
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(self.data, f, indent=2)
+            print(f"✅ Config saved to {self.config_path}")
+        except Exception as e:
+            print(f"❌ Failed to save config: {e}")
+    
+    def get(self, *keys, default=None):
+        """Get nested config value: config.get('serial', 'port')"""
+        value = self.data
+        for key in keys:
+            if isinstance(value, dict):
+                value = value.get(key)
+            else:
+                return default
+        return value if value is not None else default
+    
+    def set(self, *keys, value):
+        """Set nested config value: config.set('serial', 'port', value='/dev/ttyACM1')"""
+        if len(keys) < 1:
+            return
+        
+        # Navigate to parent dict
+        current = self.data
+        for key in keys[:-1]:
+            if key not in current:
+                current[key] = {}
+            current = current[key]
+        
+        # Set final value
+        current[keys[-1]] = value
+    
+    @staticmethod
+    def get_defaults():
+        """Fallback default configuration"""
+        return {
+            "serial": {
+                "port": "/dev/ttyACM0",
+                "baud_rate": 115200,
+                "timeout": 0.1,
+                "reconnect_attempts": 3,
+                "reconnect_delay": 2.0
+            },
+            "map": {
+                "default_lat": 35.7796,
+                "default_lon": -78.6382,
+                "default_zoom": 15,
+                "track_max_points": 500,
+                "track_color": "blue",
+                "track_width": 3,
+                "auto_center_on_boat": True,
+                "waypoint_marker_color": "red"
+            },
+            "telemetry": {
+                "update_rate_hz": 10,
+                "stale_data_timeout_sec": 5.0,
+                "battery_warn_voltage": 7.0,
+                "battery_critical_voltage": 6.5,
+                "rssi_warn_threshold": -100,
+                "rssi_critical_threshold": -110
+            },
+            "ui": {
+                "fullscreen": False,
+                "window_width": 1280,
+                "window_height": 720,
+                "theme": "dark"
+            },
+            "navigation": {
+                "waypoint_arrival_radius_m": 10.0,
+                "default_sail_trim": 50,
+                "default_rudder_center": 0
+            },
+            "logging": {
+                "enable_data_logging": True,
+                "log_directory": "./logs"
+            },
+            "advanced": {
+                "protocol_version": "1.0.0",
+                "checksum_validation": True
+            }
+        }
+
+# === PROTOCOL DEFINITIONS ===
+
+# Packet type constants (match Protocol.h)
 PKT_CONTROL = 0x01
 PKT_TELEMETRY = 0x02
 PKT_WAYPOINT = 0x03
 PKT_MODE_CHANGE = 0x04
 
+# Mode constants
 MODE_MANUAL = 0x00
 MODE_AUTONOMOUS = 0x01
 
@@ -45,7 +162,7 @@ class ProtocolHandler:
     @staticmethod
     def pack_waypoint(lat: float, lon: float) -> bytes:
         """Create waypoint packet"""
-        packet = struct.pack('<Bfff', PKT_WAYPOINT, lat, lon, 0)  # checksum=0 for now
+        packet = struct.pack('<Bfff', PKT_WAYPOINT, lat, lon, 0)
         checksum = ProtocolHandler._calculate_checksum(packet[:-1])
         return packet[:-1] + struct.pack('B', checksum)
     
@@ -66,7 +183,7 @@ class ProtocolHandler:
     @staticmethod
     def unpack_telemetry(data: bytes) -> Optional[TelemetryData]:
         """Parse telemetry packet"""
-        if len(data) < 22:  # TelemetryPacket size
+        if len(data) < 22:
             return None
         
         try:
@@ -101,26 +218,52 @@ class ProtocolHandler:
             checksum ^= byte
         return checksum
 
+# === MAIN APPLICATION ===
+
 class MissionControlApp:
     def __init__(self, root):
         self.root = root
+        
+        # Load configuration
+        self.config = Config()
+        
         self.root.title("Intelligent Sailboat - Base Station")
         
-        # Fullscreen for 7" touchscreen (720x1280)
-        self.root.attributes('-fullscreen', True)
-        # Or windowed for development:
-        # self.root.geometry("1280x720")
+        # Apply UI config
+        if self.config.get('ui', 'fullscreen', default=False):
+            self.root.attributes('-fullscreen', True)
+        else:
+            width = self.config.get('ui', 'window_width', default=1280)
+            height = self.config.get('ui', 'window_height', default=720)
+            self.root.geometry(f"{width}x{height}")
         
+        # Serial configuration
+        self.serial_port = self.config.get('serial', 'port', default='/dev/ttyACM0')
+        self.baud_rate = self.config.get('serial', 'baud_rate', default=115200)
+        self.serial_timeout = self.config.get('serial', 'timeout', default=0.1)
+        
+        # State
         self.ser: Optional[serial.Serial] = None
         self.is_connected = False
         self.telemetry_queue = queue.Queue()
-        self.track_points = []  # Store (lat, lon, timestamp) for track history
+        self.track_points = []
+        
+        # Track configuration
+        self.track_max_points = self.config.get('map', 'track_max_points', default=500)
+        self.track_color = self.config.get('map', 'track_color', default='blue')
+        self.track_width = self.config.get('map', 'track_width', default=3)
+        
+        # Telemetry configuration
+        self.update_rate_ms = int(1000 / self.config.get('telemetry', 'update_rate_hz', default=10))
+        self.battery_warn = self.config.get('telemetry', 'battery_warn_voltage', default=7.0)
+        self.battery_crit = self.config.get('telemetry', 'battery_critical_voltage', default=6.5)
         
         # Protocol handler
         self.protocol = ProtocolHandler()
         
         # Current boat state
         self.current_telemetry = TelemetryData()
+        self.current_mode = MODE_MANUAL
         
         # === BUILD UI ===
         self.build_ui()
@@ -159,6 +302,18 @@ class MissionControlApp:
             fg="#e74c3c"
         )
         self.lbl_status.pack(side="left", padx=20)
+        
+        # Settings button
+        tk.Button(
+            top_frame,
+            text="⚙️",
+            command=self.show_settings_dialog,
+            font=("Arial", 14),
+            bg="#95a5a6",
+            fg="white",
+            relief="flat",
+            padx=15
+        ).pack(side="right", padx=10, pady=10)
         
         # Mode indicator
         self.lbl_mode = tk.Label(
@@ -308,9 +463,13 @@ class MissionControlApp:
         self.map_widget = tkintermapview.TkinterMapView(parent, corner_radius=0)
         self.map_widget.pack(fill="both", expand=True)
         
-        # Default location (will update when GPS fix)
-        self.map_widget.set_position(35.7796, -78.6382)  # Raleigh, NC
-        self.map_widget.set_zoom(15)
+        # Load default location from config
+        default_lat = self.config.get('map', 'default_lat', default=35.7796)
+        default_lon = self.config.get('map', 'default_lon', default=-78.6382)
+        default_zoom = self.config.get('map', 'default_zoom', default=15)
+        
+        self.map_widget.set_position(default_lat, default_lon)
+        self.map_widget.set_zoom(default_zoom)
         
         # Boat marker
         self.boat_marker = None
@@ -328,10 +487,12 @@ class MissionControlApp:
         if self.waypoint_marker:
             self.waypoint_marker.delete()
         
+        waypoint_color = self.config.get('map', 'waypoint_marker_color', default='red')
+        
         self.waypoint_marker = self.map_widget.set_marker(
             lat, lon,
-            text="Target",
-            marker_color_circle="red",
+            text="🎯 Target",
+            marker_color_circle=waypoint_color,
             marker_color_outside="darkred"
         )
         
@@ -344,7 +505,11 @@ class MissionControlApp:
         """Connect/disconnect serial"""
         if not self.is_connected:
             try:
-                self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+                self.ser = serial.Serial(
+                    self.serial_port,
+                    self.baud_rate,
+                    timeout=self.serial_timeout
+                )
                 self.is_connected = True
                 
                 self.btn_connect.config(text="⚡ DISCONNECT", bg="#e74c3c")
@@ -379,13 +544,16 @@ class MissionControlApp:
                         if telemetry:
                             # Check for RSSI metadata
                             if b'RSSI:' in buffer:
-                                rssi_str = buffer.split(b'RSSI:')[1].split(b'\n')[0]
-                                telemetry.rssi = int(rssi_str)
+                                try:
+                                    rssi_str = buffer.split(b'RSSI:')[1].split(b'\n')[0]
+                                    telemetry.rssi = int(rssi_str)
+                                except:
+                                    pass
                             
                             self.telemetry_queue.put(telemetry)
-                            buffer = buffer[22:]  # Remove parsed packet
+                            buffer = buffer[22:]
                         else:
-                            buffer = buffer[1:]  # Shift by 1 byte and try again
+                            buffer = buffer[1:]
                     
                     # Prevent buffer overflow
                     if len(buffer) > 1000:
@@ -409,6 +577,7 @@ class MissionControlApp:
         if self.is_connected and self.ser:
             packet = self.protocol.pack_mode(MODE_AUTONOMOUS)
             self.ser.write(packet)
+            self.current_mode = MODE_AUTONOMOUS
             self.lbl_mode.config(text="MODE: AUTONOMOUS", fg="#27ae60")
             print("Switched to AUTONOMOUS mode")
     
@@ -417,6 +586,7 @@ class MissionControlApp:
         if self.is_connected and self.ser:
             packet = self.protocol.pack_mode(MODE_MANUAL)
             self.ser.write(packet)
+            self.current_mode = MODE_MANUAL
             self.lbl_mode.config(text="MODE: MANUAL", fg="#f39c12")
             print("Switched to MANUAL mode")
     
@@ -442,7 +612,17 @@ class MissionControlApp:
                 self.lbl_position.config(text=f"GPS: {telemetry.lat:.6f}°, {telemetry.lon:.6f}°")
                 self.lbl_heading.config(text=f"HDG: {telemetry.heading:.1f}°")
                 self.lbl_wind.config(text=f"WIND: {telemetry.wind_angle:.1f}° (rel)")
-                self.lbl_battery.config(text=f"BAT: {telemetry.battery:.2f} V")
+                
+                # Battery with color coding
+                bat_text = f"BAT: {telemetry.battery:.2f} V"
+                if telemetry.battery < self.battery_crit:
+                    self.lbl_battery.config(text=bat_text, fg="#e74c3c")  # Red
+                elif telemetry.battery < self.battery_warn:
+                    self.lbl_battery.config(text=bat_text, fg="#f39c12")  # Orange
+                else:
+                    self.lbl_battery.config(text=bat_text, fg="#27ae60")  # Green
+                
+                # RSSI
                 self.lbl_rssi.config(text=f"RSSI: {telemetry.rssi} dBm")
                 
                 # Update map
@@ -453,11 +633,13 @@ class MissionControlApp:
                         self.boat_marker = self.map_widget.set_marker(
                             telemetry.lat, telemetry.lon,
                             text="⛵ Boat",
-                            icon=self.create_boat_icon(telemetry.heading)
+                            marker_color_circle="blue",
+                            marker_color_outside="darkblue"
                         )
                     
-                    # Center map on boat
-                    self.map_widget.set_position(telemetry.lat, telemetry.lon)
+                    # Center map on boat (if configured)
+                    if self.config.get('map', 'auto_center_on_boat', default=True):
+                        self.map_widget.set_position(telemetry.lat, telemetry.lon)
                     
                     # Add to track
                     self.track_points.append((telemetry.lat, telemetry.lon, time.time()))
@@ -467,29 +649,165 @@ class MissionControlApp:
             pass
         
         # Schedule next update
-        self.root.after(100, self.update_ui)  # 10 Hz
+        self.root.after(self.update_rate_ms, self.update_ui)
     
     def update_track(self):
         """Draw track path on map"""
         if len(self.track_points) < 2:
             return
         
-        # Keep last 500 points (configurable)
-        if len(self.track_points) > 500:
-            self.track_points = self.track_points[-500:]
+        # Keep max points from config
+        if len(self.track_points) > self.track_max_points:
+            self.track_points = self.track_points[-self.track_max_points:]
         
-        # Draw path
+        # Draw path with config colors
         if self.track_path:
             self.track_path.delete()
         
         coords = [(p[0], p[1]) for p in self.track_points]
-        self.track_path = self.map_widget.set_path(coords, color="blue", width=3)
+        
+        self.track_path = self.map_widget.set_path(
+            coords, 
+            color=self.track_color, 
+            width=self.track_width
+        )
     
-    def create_boat_icon(self, heading: float):
-        """Create rotated boat icon (optional - needs PIL)"""
-        # For now, just use default marker
-        # TODO: Implement rotated icon with PIL
-        return None
+    # === SETTINGS DIALOG ===
+    
+    def show_settings_dialog(self):
+        """Open settings configuration dialog"""
+        settings_win = tk.Toplevel(self.root)
+        settings_win.title("⚙️ Settings")
+        settings_win.geometry("500x600")
+        settings_win.configure(bg="#34495e")
+        
+        # Serial settings
+        serial_frame = tk.LabelFrame(
+            settings_win, 
+            text="Serial Port", 
+            bg="#34495e", 
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=10, 
+            pady=10
+        )
+        serial_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(serial_frame, text="Port:", bg="#34495e", fg="white").grid(row=0, column=0, sticky="w", pady=5)
+        port_entry = tk.Entry(serial_frame, width=30)
+        port_entry.insert(0, self.config.get('serial', 'port'))
+        port_entry.grid(row=0, column=1, pady=5)
+        
+        tk.Label(serial_frame, text="Baud Rate:", bg="#34495e", fg="white").grid(row=1, column=0, sticky="w", pady=5)
+        baud_entry = tk.Entry(serial_frame, width=30)
+        baud_entry.insert(0, str(self.config.get('serial', 'baud_rate')))
+        baud_entry.grid(row=1, column=1, pady=5)
+        
+        # Map settings
+        map_frame = tk.LabelFrame(
+            settings_win, 
+            text="Map", 
+            bg="#34495e", 
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=10, 
+            pady=10
+        )
+        map_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(map_frame, text="Track Color:", bg="#34495e", fg="white").grid(row=0, column=0, sticky="w", pady=5)
+        color_var = tk.StringVar(value=self.config.get('map', 'track_color'))
+        color_menu = ttk.Combobox(
+            map_frame, 
+            textvariable=color_var, 
+            values=["blue", "red", "green", "orange", "purple", "black"],
+            width=27
+        )
+        color_menu.grid(row=0, column=1, pady=5)
+        
+        tk.Label(map_frame, text="Max Track Points:", bg="#34495e", fg="white").grid(row=1, column=0, sticky="w", pady=5)
+        track_entry = tk.Entry(map_frame, width=30)
+        track_entry.insert(0, str(self.config.get('map', 'track_max_points')))
+        track_entry.grid(row=1, column=1, pady=5)
+        
+        tk.Label(map_frame, text="Track Width:", bg="#34495e", fg="white").grid(row=2, column=0, sticky="w", pady=5)
+        width_entry = tk.Entry(map_frame, width=30)
+        width_entry.insert(0, str(self.config.get('map', 'track_width')))
+        width_entry.grid(row=2, column=1, pady=5)
+        
+        # Telemetry settings
+        telem_frame = tk.LabelFrame(
+            settings_win, 
+            text="Telemetry Alerts", 
+            bg="#34495e", 
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=10, 
+            pady=10
+        )
+        telem_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Label(telem_frame, text="Battery Warning (V):", bg="#34495e", fg="white").grid(row=0, column=0, sticky="w", pady=5)
+        bat_warn_entry = tk.Entry(telem_frame, width=30)
+        bat_warn_entry.insert(0, str(self.config.get('telemetry', 'battery_warn_voltage')))
+        bat_warn_entry.grid(row=0, column=1, pady=5)
+        
+        tk.Label(telem_frame, text="Battery Critical (V):", bg="#34495e", fg="white").grid(row=1, column=0, sticky="w", pady=5)
+        bat_crit_entry = tk.Entry(telem_frame, width=30)
+        bat_crit_entry.insert(0, str(self.config.get('telemetry', 'battery_critical_voltage')))
+        bat_crit_entry.grid(row=1, column=1, pady=5)
+        
+        # Button frame
+        btn_frame = tk.Frame(settings_win, bg="#34495e")
+        btn_frame.pack(pady=20)
+        
+        # Save button
+        def save_settings():
+            try:
+                self.config.set('serial', 'port', value=port_entry.get())
+                self.config.set('serial', 'baud_rate', value=int(baud_entry.get()))
+                self.config.set('map', 'track_color', value=color_var.get())
+                self.config.set('map', 'track_max_points', value=int(track_entry.get()))
+                self.config.set('map', 'track_width', value=int(width_entry.get()))
+                self.config.set('telemetry', 'battery_warn_voltage', value=float(bat_warn_entry.get()))
+                self.config.set('telemetry', 'battery_critical_voltage', value=float(bat_crit_entry.get()))
+                
+                self.config.save_config()
+                
+                messagebox.showinfo("Settings", "Settings saved!\n\nRestart the app to apply serial port changes.")
+                settings_win.destroy()
+            except ValueError as e:
+                messagebox.showerror("Invalid Input", f"Please check your values:\n{e}")
+        
+        # Cancel button
+        def cancel_settings():
+            settings_win.destroy()
+        
+        tk.Button(
+            btn_frame, 
+            text="💾 Save", 
+            command=save_settings, 
+            bg="#27ae60", 
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=20, 
+            pady=8,
+            relief="flat"
+        ).pack(side="left", padx=5)
+        
+        tk.Button(
+            btn_frame, 
+            text="❌ Cancel", 
+            command=cancel_settings, 
+            bg="#95a5a6", 
+            fg="white",
+            font=("Arial", 11, "bold"),
+            padx=20, 
+            pady=8,
+            relief="flat"
+        ).pack(side="left", padx=5)
+
+# === MAIN ENTRY POINT ===
 
 if __name__ == "__main__":
     root = tk.Tk()
