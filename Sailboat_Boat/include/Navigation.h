@@ -28,6 +28,7 @@ public:
     // Getters for the Actuators to read
     int getDesiredRudder(); // -100 to 100
     int getDesiredSail();   // 0 to 100
+    SailMode getMode() { return _mode; }
 
 private:
     SailMode _mode;
