@@ -3,7 +3,6 @@
 
 #include <Arduino.h>
 #include <RadioLib.h>
-#include "Protocol.h"  // <-- Use unified protocol
 
 // Define pins for Metro M4 + RFM95 Breakout
 // YOU MUST CHECK YOUR PHYSICAL WIRING HERE
@@ -17,34 +16,23 @@ public:
     CommsManager();
     bool begin();
     
-    // Send telemetry packet (Using unified protocol)
+    // Send telemetry packet (Lat, Lon, Heading, etc.)
     void sendTelemetry(float lat, float lon, float heading, float wind, float battery);
     
-    // Check for incoming commands (returns packet type, or 0 if none)
-    PacketType checkReceive();
+    // Check for incoming commands
+    bool checkReceive();
     
-    // Getters for latest received data
+    // Getters for latest commands
     int16_t getManualRudder() { return _lastRudder; }
     int16_t getManualSail() { return _lastSail; }
-    SailingMode getMode() { return _currentMode; }
-    float getWaypointLat() { return _waypointLat; }
-    float getWaypointLon() { return _waypointLon; }
-    
-    // Check if we're in autonomous mode
-    bool isAutonomous() { return _currentMode == MODE_AUTONOMOUS; }
+    bool isAutonomous() { return _autonomousMode; }
 
 private:
-    SX1276 radio = new Module(LORA_CS, LORA_DIO0, LORA_RST, LORA_DIO1);
+    SX1276 radio;
     
-    // Received data storage
     int16_t _lastRudder;
     int16_t _lastSail;
-    SailingMode _currentMode;
-    float _waypointLat;
-    float _waypointLon;
-    
-    // Receive buffer
-    uint8_t _rxBuffer[256];
+    bool _autonomousMode;
 };
 
 #endif
